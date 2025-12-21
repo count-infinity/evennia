@@ -775,12 +775,139 @@ class TestIntConversions(TestCase):
 
 
 class TestJustify(TestCase):
+    """Tests for the justify function."""
+
+    # --- Basic alignment tests ---
+
+    def test_justify_left_align(self):
+        """Left alignment pads on the right."""
+        result = utils.justify("hello", width=10, align="l")
+        self.assertEqual("hello     ", result)
+
+    def test_justify_right_align(self):
+        """Right alignment pads on the left."""
+        result = utils.justify("hello", width=10, align="r")
+        self.assertEqual("     hello", result)
+
+    def test_justify_center_align(self):
+        """Center alignment pads on both sides."""
+        result = utils.justify("hello", width=10, align="c")
+        self.assertEqual("  hello   ", result)
+
+    def test_justify_full_align(self):
+        """Full justification distributes space between words."""
+        result = utils.justify("one two three", width=15, align="f")
+        self.assertEqual("one  two  three", result)
+
+    def test_justify_full_align_uneven(self):
+        """Full justify distributes extra spaces unevenly when needed."""
+        result = utils.justify("a b c d", width=10, align="f")
+        # 4 words, 3 gaps, need 3 extra spaces (10 - 7 = 3)
+        self.assertEqual("a  b  c  d", result)
+
+    def test_justify_absolute_mode(self):
+        """Absolute mode preserves line breaks and just pads/crops."""
+        text = "line one\nline two"
+        result = utils.justify(text, width=12, align="a")
+        self.assertEqual("line one    \nline two    ", result)
+
+    # --- Whitespace handling ---
+
     def test_justify_whitespace(self):
         result = utils.justify(" ", 1, align="l")
         self.assertEqual(" ", result)
 
         result = utils.justify("", 1, align="l")
         self.assertEqual(" ", result)
+
+    def test_justify_normalizes_internal_whitespace(self):
+        """Multiple spaces and tabs within text are normalized to single spaces."""
+        result = utils.justify("hello    world", width=15, align="l")
+        self.assertEqual("hello world    ", result)
+
+    # --- Line wrapping ---
+
+    def test_justify_wraps_long_text(self):
+        """Text longer than width wraps to multiple lines."""
+        result = utils.justify("one two three four", width=10, align="l")
+        lines = result.split("\n")
+        self.assertEqual(2, len(lines))
+        for line in lines:
+            self.assertLessEqual(len(line), 10)
+
+    def test_justify_breaks_at_spaces(self):
+        """Line breaks occur at word boundaries."""
+        result = utils.justify("hello world test", width=12, align="l")
+        lines = result.split("\n")
+        self.assertEqual("hello world ", lines[0])
+        self.assertEqual("test        ", lines[1])
+
+    # --- Paragraph preservation (Issue #3649) ---
+
+    def test_justify_preserves_paragraph_breaks(self):
+        """Blank lines between paragraphs are preserved."""
+        text = "Para one.\n\nPara two."
+        result = utils.justify(text, width=20, align="l")
+        self.assertIn("\n\n", result)
+        lines = result.split("\n")
+        self.assertEqual(3, len(lines))  # para1, blank, para2
+        self.assertEqual("", lines[1])  # middle line is blank
+
+    def test_justify_preserves_multiple_paragraphs(self):
+        """Multiple paragraph breaks are all preserved."""
+        text = "One.\n\nTwo.\n\nThree."
+        result = utils.justify(text, width=20, align="l")
+        paragraphs = result.split("\n\n")
+        self.assertEqual(3, len(paragraphs))
+
+    def test_justify_preserves_blank_lines_with_whitespace(self):
+        """Blank lines containing only whitespace are treated as paragraph breaks."""
+        text = "Para one.\n   \nPara two."
+        result = utils.justify(text, width=20, align="l")
+        # Should still have a blank line between paragraphs
+        self.assertIn("\n\n", result.replace("\n   \n", "\n\n"))
+
+    def test_justify_preserves_multiple_consecutive_blank_lines(self):
+        """Multiple consecutive blank lines are preserved exactly."""
+        # 4 newlines = 3 blank lines visually
+        text = "Para one.\n\n\n\nPara two."
+        result = utils.justify(text, width=20, align="c")
+        # Should preserve all 4 newlines
+        self.assertEqual(4, result.count("\n"))
+        self.assertIn("\n\n\n\n", result)
+
+    # --- Indent ---
+
+    def test_justify_indent(self):
+        """Indent parameter adds leading spaces to all lines."""
+        result = utils.justify("hello world", width=15, align="l", indent=2)
+        lines = result.split("\n")
+        for line in lines:
+            self.assertTrue(line.startswith("  "))
+
+    def test_justify_indent_with_wrap(self):
+        """Indent is applied to all wrapped lines. Width is text width, indent is added on top."""
+        result = utils.justify("one two three four", width=12, align="l", indent=2)
+        lines = result.split("\n")
+        self.assertGreater(len(lines), 1)
+        for line in lines:
+            self.assertTrue(line.startswith("  "))
+            # Width is text width (12), indent (2) is added, so total is 14
+            self.assertLessEqual(len(line), 14)
+
+    # --- Fillchar ---
+
+    def test_justify_custom_fillchar(self):
+        """Custom fillchar is used for padding."""
+        result = utils.justify("hi", width=6, align="l", fillchar=".")
+        self.assertEqual("hi....", result)
+
+    def test_justify_custom_fillchar_center(self):
+        """Custom fillchar works with center alignment."""
+        result = utils.justify("hi", width=6, align="c", fillchar="-")
+        self.assertEqual("--hi--", result)
+
+    # --- Center alignment edge cases ---
 
     @parameterized.expand(
         [
@@ -797,19 +924,73 @@ class TestJustify(TestCase):
         result = utils.justify("Task ID", width, align="c", indent=0, fillchar=" ")
         self.assertEqual(expected, result)
 
+    # --- ANSIString handling ---
+
     def test_justify_ansi(self):
-        """
-        Justify ansistring
-
-        """
-
+        """Justify preserves ANSI color codes."""
         from evennia.utils.ansi import ANSI_RED
 
         line = ANSIString("This is a |rred|n word")
-
         result = utils.justify(line, align="c", width=30)
-
         self.assertIn(ANSI_RED, str(result))
+
+    def test_justify_ansi_returns_ansistring(self):
+        """Justify returns ANSIString when given ANSIString input."""
+        line = ANSIString("|rHello|n")
+        result = utils.justify(line, width=10, align="l")
+        self.assertIsInstance(result, ANSIString)
+
+    def test_justify_ansi_preserves_colors_in_wrapped_lines(self):
+        """ANSI colors are preserved when text wraps to multiple lines."""
+        from evennia.utils.ansi import ANSI_RED
+
+        line = ANSIString("|rRed text that should wrap to next line|n")
+        result = utils.justify(line, width=20, align="l")
+        lines = result.split("\n")
+        self.assertGreater(len(lines), 1)
+        # Both lines should contain red color code
+        for line in lines:
+            self.assertIn(ANSI_RED, str(line))
+
+    def test_justify_ansi_multiple_colors(self):
+        """Multiple colors in text are all preserved."""
+        from evennia.utils.ansi import ANSI_RED, ANSI_GREEN
+
+        line = ANSIString("|rRed|n and |ggreen|n words")
+        result = utils.justify(line, width=30, align="l")
+        self.assertIn(ANSI_RED, str(result))
+        self.assertIn(ANSI_GREEN, str(result))
+
+    def test_justify_ansi_paragraph_preservation(self):
+        """ANSIString paragraph breaks are preserved."""
+        text = ANSIString("|rPara one.|n\n\n|gPara two.|n")
+        result = utils.justify(text, width=20, align="l")
+        self.assertIn("\n\n", result.raw() if hasattr(result, "raw") else str(result))
+
+    # --- Edge cases ---
+
+    def test_justify_word_longer_than_width(self):
+        """Words longer than width are handled (not infinite loop)."""
+        result = utils.justify("superlongword", width=5, align="l")
+        # Should either break the word or keep it intact - just shouldn't hang
+        self.assertIsNotNone(result)
+        self.assertGreater(len(result), 0)
+
+    def test_justify_single_word(self):
+        """Single word is padded correctly."""
+        result = utils.justify("hello", width=10, align="l")
+        self.assertEqual("hello     ", result)
+
+    def test_justify_exact_width(self):
+        """Text exactly matching width needs no padding."""
+        result = utils.justify("hello", width=5, align="l")
+        self.assertEqual("hello", result)
+
+    def test_justify_empty_paragraph(self):
+        """Empty paragraphs don't cause issues."""
+        text = "Para one.\n\n\n\nPara two."
+        result = utils.justify(text, width=20, align="l")
+        self.assertIsNotNone(result)
 
 
 class TestAtSearchResult(TestCase):

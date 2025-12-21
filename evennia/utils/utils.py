@@ -241,111 +241,200 @@ def justify(text, width=None, align="l", indent=0, fillchar=" "):
         justified (str): The justified and indented block of text.
 
     """
-    # we need to retain ansitrings
+    width = width if width is not None else settings.CLIENT_DEFAULT_WIDTH
+    sp = fillchar
+
+    # Check if we're dealing with ANSIString
     global _ANSISTRING
     if not _ANSISTRING:
         from evennia.utils.ansi import ANSIString as _ANSISTRING
 
     is_ansi = isinstance(text, _ANSISTRING)
-    lb = _ANSISTRING("\n") if is_ansi else "\n"
-
-    def _process_line(line):
-        """
-        helper function that distributes extra spaces between words. The number
-        of gaps is nwords - 1 but must be at least 1 for single-word lines. We
-        distribute odd spaces to one of the gaps.
-        """
-        line_rest = width - (wlen + ngaps)
-
-        gap = _ANSISTRING(" ") if is_ansi else " "
-
-        if line_rest > 0:
-            if align == "l":
-                if line[-1] == "\n\n":
-                    line[-1] = sp * (line_rest - 1) + "\n" + sp * width + "\n" + sp * width
-                else:
-                    line[-1] += sp * line_rest
-            elif align == "r":
-                line[0] = sp * line_rest + line[0]
-            elif align == "c":
-                pad = sp * (line_rest // 2)
-                line[0] = pad + line[0]
-                if line[-1] == "\n\n":
-                    line[-1] += (
-                        pad + sp * (line_rest % 2 - 1) + "\n" + sp * width + "\n" + sp * width
-                    )
-                else:
-                    line[-1] = line[-1] + pad + sp * (line_rest % 2)
-            else:  # align 'f'
-                gap += sp * (line_rest // max(1, ngaps))
-                rest_gap = line_rest % max(1, ngaps)
-                for i in range(rest_gap):
-                    line[i] += sp
-        elif not any(line):
-            return [sp * width]
-        return gap.join(line)
-
-    width = width if width is not None else settings.CLIENT_DEFAULT_WIDTH
-    sp = fillchar
 
     if align == "a":
-        # absolute mode - just crop or fill to width
+        # absolute mode - just crop or fill to width, preserve all line breaks
+        lb = _ANSISTRING("\n") if is_ansi else "\n"
         abs_lines = []
         for line in text.split("\n"):
             nlen = m_len(line)
-            if m_len(line) < width:
+            if nlen < width:
                 line += sp * (width - nlen)
             else:
                 line = crop(line, width=width, suffix="")
             abs_lines.append(line)
         return lb.join(abs_lines)
 
-    # all other aligns requires splitting into paragraphs and words
+    # For all other alignments, we need to handle paragraphs and word wrapping
 
-    # split into paragraphs and words
-    paragraphs = [text]  # re.split("\n\s*?\n", text, re.MULTILINE)
-    words = []
-    for ip, paragraph in enumerate(paragraphs):
-        if ip > 0:
-            words.append(("\n", 0))
-        words.extend((word, m_len(word)) for word in paragraph.split())
+    # Split into paragraphs (one or more blank lines with optional whitespace)
+    if is_ansi:
+        # For ANSIString, split the raw text then reconstruct
+        raw = text.raw()
+        raw_paragraphs = re.split(r"(\n(?:[ \t]*\n)+)", raw)
+    else:
+        raw_paragraphs = re.split(r"(\n(?:[ \t]*\n)+)", text)
 
-    if not words:
-        # Just whitespace!
+    result_parts = []
+
+    for i, part in enumerate(raw_paragraphs):
+        if i % 2 == 1:
+            # This is a paragraph separator - preserve the number of blank lines
+            # Count newlines in separator and add that many minus 1 empty strings
+            # (since joining with \n adds one newline between each part)
+            newline_count = part.count("\n")
+            for _ in range(newline_count - 1):
+                result_parts.append("")
+            continue
+
+        # Convert to ANSIString if needed
+        if is_ansi:
+            para = _ANSISTRING(part)
+            para_clean = para.clean()
+        else:
+            para = part
+            para_clean = part
+
+        # Skip empty paragraphs
+        if not para_clean.strip():
+            continue
+
+        # Normalize whitespace within paragraph
+        words_clean = para_clean.split()
+        if not words_clean:
+            continue
+
+        if is_ansi:
+            words = para.split()
+        else:
+            words = words_clean
+
+        # Build lines by accumulating words
+        lines = []
+        current_words = []
+        current_len = 0
+
+        for j, word in enumerate(words):
+            word_len = len(words_clean[j])
+
+            if current_len == 0:
+                # First word on line
+                current_words.append(word)
+                current_len = word_len
+            elif current_len + 1 + word_len <= width:
+                # Word fits on current line
+                current_words.append(word)
+                current_len += 1 + word_len
+            else:
+                # Word doesn't fit, emit current line and start new one
+                lines.append((current_words, current_len))
+                current_words = [word]
+                current_len = word_len
+
+        # Don't forget last line
+        if current_words:
+            lines.append((current_words, current_len))
+
+        # Now apply alignment to each line
+        aligned_lines = []
+        for line_words, line_len in lines:
+            # Join words with single space
+            if is_ansi:
+                line = _ANSISTRING(" ").join(line_words)
+            else:
+                line = " ".join(line_words)
+
+            # Apply alignment
+            line = _align_line(line, line_len, width, align, sp, is_ansi, _ANSISTRING)
+
+            # Apply indent
+            if indent:
+                if is_ansi:
+                    line = _ANSISTRING(sp * indent) + line
+                else:
+                    line = sp * indent + line
+
+            aligned_lines.append(line)
+
+        # Join lines within paragraph
+        if is_ansi:
+            result_parts.append(_ANSISTRING("\n").join(aligned_lines))
+        else:
+            result_parts.append("\n".join(aligned_lines))
+
+    # Handle empty input
+    if not result_parts:
         return sp * width
 
-    ngaps = 0
-    wlen = 0
-    line = []
-    lines = []
+    # Join paragraphs with blank lines
+    if is_ansi:
+        return _ANSISTRING("\n").join(result_parts)
+    else:
+        return "\n".join(result_parts)
 
-    while words:
-        if not line:
-            # start a new line
-            word = words.pop(0)
-            wlen = word[1]
-            line.append(word[0])
-        elif (words[0][1] + wlen + ngaps) >= width:
-            # next word would exceed word length of line + smallest gaps
-            lines.append(_process_line(line))
-            ngaps, wlen, line = 0, 0, []
+
+def _align_line(line, line_len, width, align, fillchar, is_ansi, ansi_class):
+    """
+    Helper function to align a single line of text.
+
+    Args:
+        line: The line text (str or ANSIString)
+        line_len: Display length of the line
+        width: Target width
+        align: Alignment mode ('l', 'r', 'c', 'f')
+        fillchar: Character to use for padding
+        is_ansi: Whether we're working with ANSIString
+        ansi_class: The ANSIString class reference
+
+    Returns:
+        Aligned line
+    """
+    padding = width - line_len
+
+    if padding <= 0:
+        return line
+
+    if align == "l":
+        return line + fillchar * padding
+    elif align == "r":
+        if is_ansi:
+            return ansi_class(fillchar * padding) + line
+        return fillchar * padding + line
+    elif align == "c":
+        left_pad = padding // 2
+        right_pad = padding - left_pad
+        if is_ansi:
+            return ansi_class(fillchar * left_pad) + line + ansi_class(fillchar * right_pad)
+        return fillchar * left_pad + line + fillchar * right_pad
+    elif align == "f":
+        # Full justify - distribute space between words
+        if is_ansi:
+            clean = line.clean()
         else:
-            # put a new word on the line
-            word = words.pop(0)
-            line.append(word[0])
-            if word[1] == 0:
-                # a new paragraph, process immediately
-                lines.append(_process_line(line))
-                ngaps, wlen, line = 0, 0, []
-            else:
-                wlen += word[1]
-                ngaps += 1
+            clean = line
+        spaces = clean.count(" ")
+        if spaces == 0:
+            return line + fillchar * padding
 
-    if line:  # catch any line left behind
-        lines.append(_process_line(line))
-    indentstring = sp * indent
-    out = lb.join([indentstring + line for line in lines])
-    return lb.join([indentstring + line for line in lines])
+        extra_per_space = padding // spaces
+        remainder = padding % spaces
+
+        if is_ansi:
+            words = line.split(" ")
+            result_parts = [words[0]]
+            for j, word in enumerate(words[1:]):
+                extra = extra_per_space + (1 if j < remainder else 0)
+                result_parts.append(ansi_class(" " + fillchar * extra))
+                result_parts.append(word)
+            return ansi_class("").join(result_parts)
+        else:
+            words = line.split(" ")
+            result = words[0]
+            for j, word in enumerate(words[1:]):
+                extra = extra_per_space + (1 if j < remainder else 0)
+                result += " " + fillchar * extra + word
+            return result
+
+    return line
 
 
 def columnize(string, columns=2, spacing=4, align="l", width=None):
